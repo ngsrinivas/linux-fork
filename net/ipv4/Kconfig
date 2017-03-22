@@ -552,6 +552,13 @@ config TCP_CONG_VEGAS
 	window. TCP Vegas should provide less packet loss, but it is
 	not as aggressive as TCP Reno.
 
+config TCP_CONG_TESTRENO
+       tristate "TCP TestReno"
+       default n
+       ---help---
+       TCP TestReno is a new test TCP module for experimenting with programmable
+       congestion control in the linux kernel.
+
 config TCP_CONG_NV
        tristate "TCP NV"
        default n
