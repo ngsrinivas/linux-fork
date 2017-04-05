@@ -36,8 +36,6 @@ void tcp_testvegas_cong_avoid(struct sock *sk, u32 ack, u32 acked)
   struct testvegas *testvegas = inet_csk_ca(sk);
   u32 diff;
 
-  printk(KERN_INFO "testvegas beginning of congestion avoidance\n");
-
   /* Simplified vegas control loop below; disregarding ugly details about number
      of RTT samples, slow start, etc. */
 
@@ -67,7 +65,6 @@ void tcp_testvegas_cong_avoid(struct sock *sk, u32 ack, u32 acked)
     /* wipe out minRTT for next RTT */
     testvegas->minRTT = 0x7fffffff;
   }
-  printk(KERN_INFO "testvegas end of congestion avoidance\n");
 }
 
 void tcp_testvegas_init(struct sock *sk)
