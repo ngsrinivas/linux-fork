@@ -33,6 +33,13 @@ void tcp_testvegas_cong_avoid(struct sock *sk, u32 ack, u32 acked)
   struct testvegas *testvegas = inet_csk_ca(sk);
   u32 diff;
 
+  /* add in slow start, because it is **required** to ramp-up throughput. */
+  if (tcp_in_slow_start(tp)) {
+    acked = tcp_slow_start(tp, acked);
+    if (! acked)
+      return;
+  }
+
   /* Simplified vegas control loop below; disregarding ugly details about number
      of RTT samples, slow start, etc. */
 
