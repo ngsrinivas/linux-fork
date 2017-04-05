@@ -559,6 +559,13 @@ config TCP_CONG_TESTRENO
        TCP TestReno is a new test TCP module for experimenting with programmable
        congestion control in the linux kernel.
 
+config TCP_CONG_TESTVEGAS
+       tristate "TCP TestVegas"
+       default n
+       ---help---
+       TCP TestVegas is a new test TCP module for experimenting with
+       programmable congestion control in the linux kernel.
+
 config TCP_CONG_NV
        tristate "TCP NV"
        default n
