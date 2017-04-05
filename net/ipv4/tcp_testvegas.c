@@ -3,11 +3,14 @@
 
 static int alpha = 2;
 static int beta  = 4;
+static int gamma = 1;
 
 module_param(alpha, int, 0644);
 MODULE_PARM_DESC(alpha, "lower bound of packets in network");
 module_param(beta, int, 0644);
 MODULE_PARM_DESC(beta, "upper bound of packets in network");
+module_param(gamma, int, 0644);
+MODULE_PARM_DESC(gamma, "upper bound of slow-start-excess packets");
 
 struct testvegas {
   u32 baseRTT; /* minimum RTT across *all* samples */
@@ -33,12 +36,7 @@ void tcp_testvegas_cong_avoid(struct sock *sk, u32 ack, u32 acked)
   struct testvegas *testvegas = inet_csk_ca(sk);
   u32 diff;
 
-  /* add in slow start, because it is **required** to ramp-up throughput. */
-  if (tcp_in_slow_start(tp)) {
-    acked = tcp_slow_start(tp, acked);
-    if (! acked)
-      return;
-  }
+  printk(KERN_INFO "testvegas beginning of congestion avoidance\n");
 
   /* Simplified vegas control loop below; disregarding ugly details about number
      of RTT samples, slow start, etc. */
@@ -47,16 +45,29 @@ void tcp_testvegas_cong_avoid(struct sock *sk, u32 ack, u32 acked)
   if (after(ack, testvegas->beg_snd_una)) {
     diff = tp->snd_cwnd*(testvegas->minRTT-testvegas->baseRTT)/testvegas->minRTT;
     testvegas->beg_snd_una = tp->snd_nxt;
-    if (diff < alpha) {
+    if (tcp_in_slow_start(tp)) {
+      if (diff > gamma) {
+      /* Gotta set the ssthresh somewhere; else will permanently be stuck in
+         slow start. */
+        tp->snd_ssthresh = min(tp->snd_ssthresh, tp->snd_cwnd-1);
+        /* A couple of options. We could either directly jump to the target cwnd
+           and rate, or do additive decrease until the point of convergence. */
+        tp->snd_cwnd--;
+      } else {
+        tcp_slow_start(tp, acked);
+      }
+    } else if (diff < alpha) {
       tp->snd_cwnd++;
     } else if (diff > beta) {
       tp->snd_cwnd--;
     } else {
       /* Sending just as fast as we should be. */
     }
+    printk(KERN_INFO "testvegas base %d min %d\n", testvegas->baseRTT, testvegas->minRTT);
     /* wipe out minRTT for next RTT */
     testvegas->minRTT = 0x7fffffff;
   }
+  printk(KERN_INFO "testvegas end of congestion avoidance\n");
 }
 
 void tcp_testvegas_init(struct sock *sk)
@@ -81,6 +92,7 @@ static struct tcp_congestion_ops tcp_testvegas = {
 
 static int __init tcp_testvegas_register(void)
 {
+  printk(KERN_INFO "Initializing testvegas\n");
   BUILD_BUG_ON(sizeof(struct testvegas) > ICSK_CA_PRIV_SIZE);
   tcp_register_congestion_control(&tcp_testvegas);
   return 0;
@@ -88,6 +100,7 @@ static int __init tcp_testvegas_register(void)
 
 static void __exit tcp_testvegas_unregister(void)
 {
+  printk(KERN_INFO "Exiting testvegas\n");
   tcp_unregister_congestion_control(&tcp_testvegas);
 }
 
