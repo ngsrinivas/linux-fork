@@ -573,6 +573,13 @@ config TCP_CONG_TESTCUBIC
        TCP TestCubic is a new test TCP module for experimenting with
        programmable congestion control in the linux kernel.
 
+config TCP_CONG_TESTRATE
+       tristate "TCP TestRate"
+       default n
+       ---help---
+       TCP TestRate is a new test TCP module for experimenting with
+       programmable congestion control in the linux kernel.
+
 config TCP_CONG_NV
        tristate "TCP NV"
        default n

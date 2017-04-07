@@ -48,6 +48,7 @@ obj-$(CONFIG_TCP_CONG_BBR) += tcp_bbr.o
 obj-$(CONFIG_TCP_CONG_TESTRENO) += tcp_testreno.o
 obj-$(CONFIG_TCP_CONG_TESTVEGAS) += tcp_testvegas.o
 obj-$(CONFIG_TCP_CONG_TESTCUBIC) += tcp_testcubic.o
+obj-$(CONFIG_TCP_CONG_TESTRATE)  += tcp_testrate.o
 obj-$(CONFIG_TCP_CONG_BIC) += tcp_bic.o
 obj-$(CONFIG_TCP_CONG_CDG) += tcp_cdg.o
 obj-$(CONFIG_TCP_CONG_CUBIC) += tcp_cubic.o
