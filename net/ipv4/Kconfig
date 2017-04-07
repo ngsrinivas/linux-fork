@@ -566,6 +566,13 @@ config TCP_CONG_TESTVEGAS
        TCP TestVegas is a new test TCP module for experimenting with
        programmable congestion control in the linux kernel.
 
+config TCP_CONG_TESTCUBIC
+       tristate "TCP TestCubic"
+       default n
+       ---help---
+       TCP TestCubic is a new test TCP module for experimenting with
+       programmable congestion control in the linux kernel.
+
 config TCP_CONG_NV
        tristate "TCP NV"
        default n
