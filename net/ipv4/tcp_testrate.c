@@ -15,7 +15,6 @@
 
 struct testrate {
   u32 rate; /* rate to pace packets, in bytes per second */
-  u32 mismatch_cnt; /* how frequently is delivered rate mismatched? */
   u32 ewma_rtt; /* ewma over rtt samples in us */
 };
 
@@ -32,50 +31,53 @@ static void tcp_testrate_init(struct sock *sk) {
   sk->sk_max_pacing_rate = ca->rate;
   sk->sk_pacing_rate = 0;
   sk->sk_pacing_rate = ca->rate;
-  ca->mismatch_cnt = 0;
   ca->ewma_rtt = 0;
 }
 
 static int rate_sample_valid(const struct rate_sample *rs)
 {
-  return (rs->delivered > 0) && (rs->interval_us > 0);
+  return (rs->delivered > 0) && (rs->snd_int_us > 0) && (rs->rcv_int_us > 0);
+}
+
+void tcp_testrate_check_rate_mismatch(u64 achieved_snd_rate,
+                                      u64 achieved_rcv_rate,
+                                      u32 set_rate,
+                                      const struct rate_sample *rs,
+                                      u32 perc_thresh)
+{
+  u32 diff_rate;
+  diff_rate = set_rate - achieved_snd_rate;
+  if (set_rate > achieved_snd_rate &&
+      diff_rate > (perc_thresh * (set_rate / 100))) {
+    pr_info("tcp_testrate found a rate mismatch %d bps over %ld us\n",
+            diff_rate, rs->interval_us);
+    pr_info("(delivered %d bytes) expected: %d achieved: snd %lld rcv %lld\n",
+            rs->delivered,
+            set_rate,
+            achieved_snd_rate,
+            achieved_rcv_rate);
+  }
 }
 
 void tcp_testrate_cong_control(struct sock *sk, const struct rate_sample *rs)
 {
   u64 snd_bw_bps;   /* send bandwidth in bytes per second */
   u64 rcv_bw_bps;   /* recv bandwidth in bytes per second */
-  u32 diff_bps; /* difference in delivered and set bandwidths */
   u64 segs_in_flight; /* compute desired cwnd as rate * rtt */
 
   struct tcp_sock *tp = tcp_sk(sk);
   struct testrate *ca = inet_csk_ca(sk);
-  /* Report rate mismatches beyond a threshold of BW_ERROR_PERC_THRESH
-     percent. */
   if (rate_sample_valid(rs)) {
     rcv_bw_bps = snd_bw_bps = (u64)rs->delivered * MTU * S_TO_US;
-    /* Compute send rate either using the send time or receive time. */
-    if (rs->snd_int_us > 0)
-      do_div(snd_bw_bps, rs->snd_int_us);
-    else
-      do_div(snd_bw_bps, rs->interval_us);
-    /* Compute receive rate using receive time, if possible. */
-    if (rs->rcv_int_us > 0)
-      do_div(rcv_bw_bps, rs->rcv_int_us);
+    do_div(snd_bw_bps, rs->snd_int_us);
+    do_div(rcv_bw_bps, rs->rcv_int_us);
     /* Check rate mismatch through a threshold difference between the set and
        achieved send rates. */
-    diff_bps = ca->rate - snd_bw_bps;
-    if (ca->rate > snd_bw_bps &&
-        diff_bps > (BW_ERROR_PERC_THRESH * (ca->rate / 100))) {
-      pr_info("tcp_testrate found a rate mismatch %d %d %ld %lld %lld\n",
-              diff_bps,
-              rs->delivered,
-              rs->interval_us,
-              snd_bw_bps,
-              rcv_bw_bps);
-      ca->mismatch_cnt++;
-    }
-
+    tcp_testrate_check_rate_mismatch(snd_bw_bps,
+                                     rcv_bw_bps,
+                                     ca->rate,
+                                     rs,
+                                     BW_ERROR_PERC_THRESH);
     /* Want to ensure window can support the set rate. */
     if (likely (rs->rtt_us > 0)) {
       segs_in_flight = (u64)ca->rate * rs->rtt_us;
@@ -87,21 +89,6 @@ void tcp_testrate_cong_control(struct sock *sk, const struct rate_sample *rs)
     }
   }
 }
-
-/* Moved from congestion avoidance function to congestion 'control'
- * function. Currently the window doesn't change at all -- fixed to a value that
- * permits the specified rate at the given RTT. */
-/* void tcp_testrate_cong_avoid(struct sock *sk, u32 ack, u32 acked) { */
-/*   struct tcp_sock *tp = tcp_sk(sk); */
-
-/*   // Run slow start and AIMD to see how queues are built. */
-/*   if (tcp_in_slow_start(tp)) { */
-/*     acked = tcp_slow_start(tp, acked); */
-/*     if (! acked) */
-/*       return; */
-/*   } */
-/*   tcp_cong_avoid_ai(tp, tp->snd_cwnd, acked); */
-/* } */
 
 static struct tcp_congestion_ops tcp_testrate = {
   .init = tcp_testrate_init,
