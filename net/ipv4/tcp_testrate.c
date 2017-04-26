@@ -43,7 +43,8 @@ static int rate_sample_valid(const struct rate_sample *rs)
 
 void tcp_testrate_cong_control(struct sock *sk, const struct rate_sample *rs)
 {
-  u64 bw_bps;   /* delivered bandwidth in bytes per second */
+  u64 snd_bw_bps;   /* send bandwidth in bytes per second */
+  u64 rcv_bw_bps;   /* recv bandwidth in bytes per second */
   u32 diff_bps; /* difference in delivered and set bandwidths */
   u64 segs_in_flight; /* compute desired cwnd as rate * rtt */
 
@@ -52,16 +53,26 @@ void tcp_testrate_cong_control(struct sock *sk, const struct rate_sample *rs)
   /* Report rate mismatches beyond a threshold of BW_ERROR_PERC_THRESH
      percent. */
   if (rate_sample_valid(rs)) {
-    bw_bps = (u64)rs->delivered * MTU * S_TO_US;
-    do_div(bw_bps, rs->interval_us);
-    diff_bps = ca->rate - bw_bps;
-    if (ca->rate > bw_bps &&
+    rcv_bw_bps = snd_bw_bps = (u64)rs->delivered * MTU * S_TO_US;
+    /* Compute send rate either using the send time or receive time. */
+    if (rs->snd_int_us > 0)
+      do_div(snd_bw_bps, rs->snd_int_us);
+    else
+      do_div(snd_bw_bps, rs->interval_us);
+    /* Compute receive rate using receive time, if possible. */
+    if (rs->rcv_int_us > 0)
+      do_div(rcv_bw_bps, rs->rcv_int_us);
+    /* Check rate mismatch through a threshold difference between the set and
+       achieved send rates. */
+    diff_bps = ca->rate - snd_bw_bps;
+    if (ca->rate > snd_bw_bps &&
         diff_bps > (BW_ERROR_PERC_THRESH * (ca->rate / 100))) {
-      pr_info("tcp_testrate found a rate mismatch %d %d %ld %lld\n",
+      pr_info("tcp_testrate found a rate mismatch %d %d %ld %lld %lld\n",
               diff_bps,
               rs->delivered,
               rs->interval_us,
-              bw_bps);
+              snd_bw_bps,
+              rcv_bw_bps);
       ca->mismatch_cnt++;
     }
 
