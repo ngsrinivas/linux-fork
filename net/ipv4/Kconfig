@@ -580,6 +580,13 @@ config TCP_CONG_TESTRATE
        TCP TestRate is a new test TCP module for experimenting with
        programmable congestion control in the linux kernel.
 
+config TCP_CONG_NIMBUS
+       tristate "TCP Nimbus"
+       default n
+       ---help---
+       TCP Nimbus is a new test TCP module for experimenting with
+       programmable congestion control in the linux kernel.
+
 config TCP_CONG_NV
        tristate "TCP NV"
        default n
