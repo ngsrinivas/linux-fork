@@ -4,34 +4,25 @@
 
 #define MTU (1500)
 #define S_TO_US (1000000)
-#define BW_ERROR_PERC_THRESH 5
-#define EWMA_SAMPLE_WT 4
+#define BW_ERROR_PERC_THRESH 15
 /* TODO: Hard-coding the number of bytes in the MTU is really hacky. Will fix
    this once I figure out the right way. */
 
-#define MYRATE 800000
+#define MYRATE 600000
 /* Rate above is in bytes per second. 1 MSS/millisecond is 12 Mbit/s or
    1.5 MBytes/second. */
 
 struct testrate {
-  u32 rate; /* rate to pace packets, in bytes per second */
-  u32 ewma_rtt; /* ewma over rtt samples in us */
+  u32 rate;           /* rate to pace packets, in bytes per second */
 };
 
-void tcp_testrate_pkts_acked(struct sock *sk, const struct ack_sample *sample)
+static void tcp_testrate_init(struct sock *sk)
 {
-  struct testrate *ca = inet_csk_ca(sk);
-  u32 sampleRTT = sample->rtt_us;
-  ca->ewma_rtt = (ca->ewma_rtt + (EWMA_SAMPLE_WT-1) * sampleRTT) / EWMA_SAMPLE_WT;
-}
-
-static void tcp_testrate_init(struct sock *sk) {
   struct testrate *ca = inet_csk_ca(sk);
   ca->rate = MYRATE;
   sk->sk_max_pacing_rate = ca->rate;
   sk->sk_pacing_rate = 0;
   sk->sk_pacing_rate = ca->rate;
-  ca->ewma_rtt = 0;
 }
 
 static int rate_sample_valid(const struct rate_sample *rs)
@@ -49,9 +40,10 @@ void tcp_testrate_check_rate_mismatch(u64 achieved_snd_rate,
   diff_rate = set_rate - achieved_snd_rate;
   if (set_rate > achieved_snd_rate &&
       diff_rate > (perc_thresh * (set_rate / 100))) {
-    pr_info("tcp_testrate found a rate mismatch %d bps over %ld us\n",
+    pr_info("TestRate: found a rate mismatch %d bps over %ld us\n",
             diff_rate, rs->interval_us);
-    pr_info("(delivered %d bytes) expected: %d achieved: snd %lld rcv %lld\n",
+    pr_info("TestRate: delivered %d bytes. expected rate: %d achieved: snd %lld"
+            " rcv %lld\n",
             rs->delivered,
             set_rate,
             achieved_snd_rate,
@@ -93,7 +85,6 @@ void tcp_testrate_cong_control(struct sock *sk, const struct rate_sample *rs)
 static struct tcp_congestion_ops tcp_testrate = {
   .init = tcp_testrate_init,
   .ssthresh = tcp_reno_ssthresh,
-  .pkts_acked = tcp_testrate_pkts_acked,
   .cong_control = tcp_testrate_cong_control,
   .undo_cwnd = tcp_reno_undo_cwnd,
 
