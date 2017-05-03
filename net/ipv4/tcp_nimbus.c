@@ -14,7 +14,7 @@
    1.5 MBytes/second. */
 
 /* Link capacity in bytes per second. */
-#define LINK_CAP 750000
+#define LINK_CAP 3000000
 /* Nimbus parameters. */
 #define NIMBUS_THRESH_DEL 15
 #define NIMBUS_ALPHA 8
@@ -26,6 +26,8 @@
 #define NIMBUS_RATE_STALE_TIMEOUT_MS 100
 #define NIMBUS_MIN_SEGS_IN_FLIGHT 3
 #define NIMBUS_EWMA_RECENCY 6
+/* Error accounting parameters. */
+#define DELAY_ERROR_THRESH_US 5000
 
 struct nimbus {
   u32 rate;           /* rate to pace packets, in bytes per second */
@@ -33,6 +35,8 @@ struct nimbus {
   u32 last_rtt_us;    /* maintain the last rtt sample */
   u32 ewma_rtt_us;    /* maintain an ewma of instantaneous rtt samples */
   u32 rate_stamp;     /* last time when rate was updated */
+  u32 ewma_rtt_error; /* account samples with total_rtt error */
+  u32 total_samples;  /* total number of rtt samples */
 };
 
 void tcp_nimbus_pkts_acked(struct sock *sk, const struct ack_sample *sample)
@@ -57,6 +61,8 @@ static void tcp_nimbus_init(struct sock *sk)
   sk->sk_max_pacing_rate = ca->rate;
   sk->sk_pacing_rate = 0;
   sk->sk_pacing_rate = ca->rate;
+  ca->ewma_rtt_error = 0;
+  ca->total_samples = 0;
 }
 
 static u32 estimate_cross_traffic(u32 est_bandwidth,
@@ -94,6 +100,7 @@ static u32 nimbus_rate_control(const struct sock *sk,
 {
   s32 new_rate;
   u32 rtt; /* rtt used to compute new rate */
+  u32 last_rtt;
   u32 min_rtt;
   u16 sign;
   s32 delay_diff;
@@ -106,6 +113,7 @@ static u32 nimbus_rate_control(const struct sock *sk,
   struct nimbus *ca = inet_csk_ca(sk);
   rtt = ca->ewma_rtt_us;
   min_rtt  = ca->min_rtt_us;
+  last_rtt = ca->last_rtt_us;
   spare_cap = (s32)est_bandwidth - zt - rint;
   rate_term = NIMBUS_ALPHA * spare_cap / NIMBUS_FRAC_DR;
   expected_rtt = (NIMBUS_THRESH_DEL * min_rtt)/NIMBUS_FRAC_DR;
@@ -122,10 +130,16 @@ static u32 nimbus_rate_control(const struct sock *sk,
   if (sign == 1)
     delay_term = -delay_term;
 
+  /* Error accounting */
+  ca->total_samples++;
+  if (((sign == 0) && (delay_diff > (s32)DELAY_ERROR_THRESH_US)) ||
+      ((sign == 1) && (delay_diff < -(s32)DELAY_ERROR_THRESH_US)))
+    ca->ewma_rtt_error++;
+
   /* Compute new rate as a combination of delay mismatch and rate mismatch. */
   new_rate = rint + rate_term - delay_term;
-  pr_info("Nimbus: min_rtt %d ewma_rtt %d expected_rtt %d\n",
-          min_rtt, rtt, expected_rtt);
+  pr_info("Nimbus: min_rtt %d ewma_rtt %d last_rtt %d expected_rtt %d\n",
+          min_rtt, rtt, last_rtt, expected_rtt);
   pr_info("Nimbus: rint %d spare_cap %d rate_term %d delay_diff %d delay_term"
           " %lld new_rate %d\n", 
           rint, spare_cap, rate_term, delay_diff, delay_term, new_rate);
@@ -134,6 +148,9 @@ static u32 nimbus_rate_control(const struct sock *sk,
   if (new_rate < (s32)min_seg_rate) new_rate = min_seg_rate;
   if (new_rate > (s32)NIMBUS_MAX_RATE) new_rate = NIMBUS_MAX_RATE;
   pr_info("Nimbus: clamped rate %d\n", new_rate);
+  pr_info("Nimbus: total rtt samples %d errors %d\n",
+          ca->total_samples,
+          ca->ewma_rtt_error);
   return (u32)new_rate;
 }
 
