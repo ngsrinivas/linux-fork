@@ -24,6 +24,7 @@
 #define NIMBUS_CROSS_TRAFFIC_EST_VALID_THRESH 11
 #define NIMBUS_EPOCH_MS 20
 #define NIMBUS_RATE_STALE_TIMEOUT_MS 100
+#define NIMBUS_MIN_SEGS_IN_FLIGHT 3
 
 struct nimbus {
   u32 rate;           /* rate to pace packets, in bytes per second */
@@ -90,18 +91,19 @@ static u32 nimbus_rate_control(const struct sock *sk,
   u32 min_rtt;
   u16 sign;
   s32 delay_diff;
+  u32 expected_rtt;
   s64 delay_term;
   s32 spare_cap;
   s32 rate_term;
-  u32 two_seg_rate;
+  u32 min_seg_rate;
 
   struct nimbus *ca = inet_csk_ca(sk);
   last_rtt = ca->last_rtt_us;
   min_rtt  = ca->min_rtt_us;
   spare_cap = (s32)est_bandwidth - zt - rint;
   rate_term = NIMBUS_ALPHA * spare_cap / NIMBUS_FRAC_DR;
-  delay_diff = (last_rtt -
-                ((NIMBUS_THRESH_DEL * min_rtt)/NIMBUS_FRAC_DR));
+  expected_rtt = (NIMBUS_THRESH_DEL * min_rtt)/NIMBUS_FRAC_DR;
+  delay_diff = (s32)last_rtt - (s32)expected_rtt;
   delay_term = (s64)est_bandwidth * delay_diff;
   sign = 0;
   if (delay_term < 0) {
@@ -116,13 +118,14 @@ static u32 nimbus_rate_control(const struct sock *sk,
 
   /* Compute new rate as a combination of delay mismatch and rate mismatch. */
   new_rate = rint + rate_term - delay_term;
-  pr_info("Nimbus: min_rtt %d last_rtt %d\n", min_rtt, last_rtt);
+  pr_info("Nimbus: min_rtt %d last_rtt %d expected_rtt %d\n",
+          min_rtt, last_rtt, expected_rtt);
   pr_info("Nimbus: rint %d spare_cap %d rate_term %d delay_diff %d delay_term"
           " %lld new_rate %d\n", 
           rint, spare_cap, rate_term, delay_diff, delay_term, new_rate);
   /* Clamp the rate between two reasonable limits. */
-  two_seg_rate = 2 * single_seg_bps(last_rtt);
-  if (new_rate < (s32)two_seg_rate) new_rate = two_seg_rate;
+  min_seg_rate = NIMBUS_MIN_SEGS_IN_FLIGHT * single_seg_bps(last_rtt);
+  if (new_rate < (s32)min_seg_rate) new_rate = min_seg_rate;
   if (new_rate > (s32)NIMBUS_MAX_RATE) new_rate = NIMBUS_MAX_RATE;
   pr_info("Nimbus: clamped rate %d\n", new_rate);
   return (u32)new_rate;
@@ -130,14 +133,16 @@ static u32 nimbus_rate_control(const struct sock *sk,
 
 static int rate_sample_valid(const struct rate_sample *rs)
 {
+  int ret = 0;
   if ((rs->delivered > 0) && (rs->snd_int_us > 0) && (rs->rcv_int_us > 0))
     return 0;
-  else if (rs->delivered <= 0)
-    return 1;
-  else if (rs->snd_int_us <= 0)
-    return 2;
-  else
-    return 3;
+  if (rs->delivered <= 0)
+    ret |= 1;
+  if (rs->snd_int_us <= 0)
+    ret |= 2;
+  if (rs->rcv_int_us <= 0)
+    ret |= 4;
+  return ret;
 }
 
 void tcp_nimbus_check_rate_mismatch(u64 achieved_snd_rate,
@@ -147,12 +152,14 @@ void tcp_nimbus_check_rate_mismatch(u64 achieved_snd_rate,
                                       u32 perc_thresh)
 {
   u32 diff_rate;
-  diff_rate = set_rate - achieved_snd_rate;
-  if (set_rate > achieved_snd_rate &&
-      diff_rate > (perc_thresh * (set_rate / 100))) {
-    pr_info("tcp_nimbus found a rate mismatch %d bps over %ld us\n",
+  if (set_rate > achieved_snd_rate)
+    diff_rate = set_rate - achieved_snd_rate;
+  else
+    diff_rate = achieved_snd_rate - set_rate;
+  if (diff_rate > (perc_thresh * (set_rate / 100))) {
+    pr_info("Nimbus: tcp_nimbus found a rate mismatch %d bps over %ld us\n",
             diff_rate, rs->interval_us);
-    pr_info("(delivered %d bytes) expected: %d achieved: snd %lld rcv %lld\n",
+    pr_info("Nimbus: (delivered %d segments) expected: %d achieved: snd %lld rcv %lld\n",
             rs->delivered,
             set_rate,
             achieved_snd_rate,
@@ -216,8 +223,8 @@ void tcp_nimbus_cong_control(struct sock *sk, const struct rate_sample *rs)
       tp->snd_cwnd = segs_in_flight + 1;
     }
   } else if (rate_not_changed_awhile(ca)) {
-    pr_info("Nimbus: Rate hasn't changed in a while! Valid rate: %d\n",
-            measured_valid_rate);
+    pr_info("Nimbus: Rate hasn't changed in a while! Valid rate: %d %d\n",
+            measured_valid_rate, tp->snd_cwnd);
   }
 }
 
