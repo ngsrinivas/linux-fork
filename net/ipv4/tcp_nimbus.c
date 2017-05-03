@@ -25,11 +25,13 @@
 #define NIMBUS_EPOCH_MS 20
 #define NIMBUS_RATE_STALE_TIMEOUT_MS 100
 #define NIMBUS_MIN_SEGS_IN_FLIGHT 3
+#define NIMBUS_EWMA_RECENCY 6
 
 struct nimbus {
   u32 rate;           /* rate to pace packets, in bytes per second */
   u32 min_rtt_us;     /* maintain min rtt samples */
   u32 last_rtt_us;    /* maintain the last rtt sample */
+  u32 ewma_rtt_us;    /* maintain an ewma of instantaneous rtt samples */
   u32 rate_stamp;     /* last time when rate was updated */
 };
 
@@ -39,6 +41,9 @@ void tcp_nimbus_pkts_acked(struct sock *sk, const struct ack_sample *sample)
   u32 sampleRTT = sample->rtt_us;
   ca->min_rtt_us = min(ca->min_rtt_us, sampleRTT);
   ca->last_rtt_us = sampleRTT;
+  ca->ewma_rtt_us = ((sampleRTT * NIMBUS_EWMA_RECENCY) +
+                     (ca->ewma_rtt_us *
+                      (NIMBUS_FRAC_DR-NIMBUS_EWMA_RECENCY))) / NIMBUS_FRAC_DR;
 }
 
 static void tcp_nimbus_init(struct sock *sk)
@@ -47,6 +52,7 @@ static void tcp_nimbus_init(struct sock *sk)
   ca->rate = MYRATE;
   ca->min_rtt_us = 0x7fffffff;
   ca->last_rtt_us = 0x7fffffff;
+  ca->ewma_rtt_us = 0x7fffffff;
   ca->rate_stamp = 0;
   sk->sk_max_pacing_rate = ca->rate;
   sk->sk_pacing_rate = 0;
@@ -56,7 +62,7 @@ static void tcp_nimbus_init(struct sock *sk)
 static u32 estimate_cross_traffic(u32 est_bandwidth,
                                   u32 rint,
                                   u32 routt,
-                                  u32 last_rtt,
+                                  u32 rtt,
                                   u32 min_rtt)
 {
   s64 zt;
@@ -64,7 +70,7 @@ static u32 estimate_cross_traffic(u32 est_bandwidth,
   do_div(zt, routt);
   zt -= rint;
   pr_info("Nimbus: Estimated cross traffic: %lld bps\n", zt);
-  if (last_rtt < (NIMBUS_CROSS_TRAFFIC_EST_VALID_THRESH * min_rtt / NIMBUS_FRAC_DR))
+  if (rtt < (NIMBUS_CROSS_TRAFFIC_EST_VALID_THRESH * min_rtt / NIMBUS_FRAC_DR))
     zt = 0;
   else if (zt < 0)
     zt = 0;
@@ -87,7 +93,7 @@ static u32 nimbus_rate_control(const struct sock *sk,
                                u32 zt)
 {
   s32 new_rate;
-  u32 last_rtt;
+  u32 rtt; /* rtt used to compute new rate */
   u32 min_rtt;
   u16 sign;
   s32 delay_diff;
@@ -98,12 +104,12 @@ static u32 nimbus_rate_control(const struct sock *sk,
   u32 min_seg_rate;
 
   struct nimbus *ca = inet_csk_ca(sk);
-  last_rtt = ca->last_rtt_us;
+  rtt = ca->ewma_rtt_us;
   min_rtt  = ca->min_rtt_us;
   spare_cap = (s32)est_bandwidth - zt - rint;
   rate_term = NIMBUS_ALPHA * spare_cap / NIMBUS_FRAC_DR;
   expected_rtt = (NIMBUS_THRESH_DEL * min_rtt)/NIMBUS_FRAC_DR;
-  delay_diff = (s32)last_rtt - (s32)expected_rtt;
+  delay_diff = (s32)rtt - (s32)expected_rtt;
   delay_term = (s64)est_bandwidth * delay_diff;
   sign = 0;
   if (delay_term < 0) {
@@ -118,13 +124,13 @@ static u32 nimbus_rate_control(const struct sock *sk,
 
   /* Compute new rate as a combination of delay mismatch and rate mismatch. */
   new_rate = rint + rate_term - delay_term;
-  pr_info("Nimbus: min_rtt %d last_rtt %d expected_rtt %d\n",
-          min_rtt, last_rtt, expected_rtt);
+  pr_info("Nimbus: min_rtt %d ewma_rtt %d expected_rtt %d\n",
+          min_rtt, rtt, expected_rtt);
   pr_info("Nimbus: rint %d spare_cap %d rate_term %d delay_diff %d delay_term"
           " %lld new_rate %d\n", 
           rint, spare_cap, rate_term, delay_diff, delay_term, new_rate);
   /* Clamp the rate between two reasonable limits. */
-  min_seg_rate = NIMBUS_MIN_SEGS_IN_FLIGHT * single_seg_bps(last_rtt);
+  min_seg_rate = NIMBUS_MIN_SEGS_IN_FLIGHT * single_seg_bps(rtt);
   if (new_rate < (s32)min_seg_rate) new_rate = min_seg_rate;
   if (new_rate > (s32)NIMBUS_MAX_RATE) new_rate = NIMBUS_MAX_RATE;
   pr_info("Nimbus: clamped rate %d\n", new_rate);
@@ -208,7 +214,7 @@ void tcp_nimbus_cong_control(struct sock *sk, const struct rate_sample *rs)
                                    BW_ERROR_PERC_THRESH);
     /* Perform nimbus rate control */
     zt = estimate_cross_traffic(LINK_CAP, snd_bw_bps, rcv_bw_bps,
-                                ca->last_rtt_us, ca->min_rtt_us);
+                                ca->ewma_rtt_us, ca->min_rtt_us);
     new_rate = nimbus_rate_control(sk, snd_bw_bps, rcv_bw_bps, LINK_CAP, zt);
     /* Set the socket rate to nimbus proposed rate */
     ca->rate = new_rate;
