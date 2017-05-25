@@ -8,7 +8,7 @@
 /* TODO: Hard-coding the number of bytes in the MTU is really hacky. Will fix
    this once I figure out the right way. */
 
-#define MYRATE 600000
+#define MYRATE 128000000
 /* Rate above is in bytes per second. 1 MSS/millisecond is 12 Mbit/s or
    1.5 MBytes/second. */
 
@@ -77,7 +77,7 @@ void tcp_testrate_cong_control(struct sock *sk, const struct rate_sample *rs)
       do_div(segs_in_flight, S_TO_US);
       /* Add one more segment to segs_to_flight to prevent rate underflow due to
          temporary RTT fluctuations. */
-      tp->snd_cwnd = segs_in_flight + 1;
+      tp->snd_cwnd = segs_in_flight + 3;
     }
   }
 }
