@@ -108,6 +108,11 @@ static u32 estimate_cross_traffic(u32 est_bandwidth,
 {
   s64 zt;
   zt = (u64)est_bandwidth * rint;
+  if (routt == 0) {
+    pr_info("Nimbus: Unexpected condition rout===0 in "
+            "estimate_cross_traffic\n");
+    return 0;
+  }
   do_div(zt, routt);
   zt -= rint;
   pr_info("Nimbus: Estimated cross traffic: %lld bps\n", zt);
@@ -159,6 +164,10 @@ static u32 nimbus_rate_control(const struct sock *sk,
     sign = 1;
     delay_term = -delay_term;
   }
+  if (min_rtt == 0) {
+    pr_info("Nimbus: unexpected min_rtt == 0 in rate control!\n");
+    return rint;
+  }
   do_div(delay_term, (s64)min_rtt);
   delay_term = delay_term * (s64)NIMBUS_BETA;
   do_div(delay_term, (s64)NIMBUS_FRAC_DR);
@@ -189,7 +198,7 @@ static u32 nimbus_rate_control(const struct sock *sk,
   min_seg_rate = NIMBUS_MIN_SEGS_IN_FLIGHT * single_seg_bps(rtt);
   if (new_rate < (s32)min_seg_rate) new_rate = min_seg_rate;
   if (new_rate > (s32)NIMBUS_MAX_RATE) new_rate = NIMBUS_MAX_RATE;
-  pr_info("Nimbus: clamped rate %d\n", new_rate);
+  pr_info("Nimbus: clamped rate %d Mbit/s\n", new_rate >> 17);
   pr_info("Nimbus: total rtt samples %d errors %d\n",
           ca->total_samples,
           ca->ewma_rtt_error);
@@ -276,7 +285,7 @@ void tcp_nimbus_cong_control(struct sock *sk, const struct rate_sample *rs)
     new_rate = nimbus_rate_control(sk, snd_bw_bps, rcv_bw_bps, LINK_CAP, zt);
     /* Set the socket rate to nimbus proposed rate */
     ca->rate = new_rate;
-    pr_info("Nimbus: Setting new rate %d\n", ca->rate);
+    pr_info("Nimbus: Setting new rate %d Mbit/s\n", ca->rate >> 17);
     tcp_nimbus_set_pacing_rate(sk);
   } else if (rate_not_changed_awhile(ca)) {
     pr_info("Nimbus: Rate hasn't changed in a while! Valid rate: %d %d\n",
