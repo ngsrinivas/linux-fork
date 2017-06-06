@@ -44,7 +44,7 @@ struct nimbus {
 bool min_rtt_time_to_update(struct nimbus *ca)
 {
   return after(tcp_time_stamp, ca->min_rtt_stamp +
-               msecs_to_jiffies(ca->new_min_rtt / 100));
+               msecs_to_jiffies(ca->new_min_rtt));
 }
 
 void tcp_nimbus_pkts_acked(struct sock *sk, const struct ack_sample *sample)
