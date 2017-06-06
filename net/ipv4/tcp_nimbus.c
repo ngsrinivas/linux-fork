@@ -127,7 +127,11 @@ static u32 estimate_cross_traffic(u32 est_bandwidth,
 }
 
 static u32 single_seg_bps(u32 rtt_us) {
-  return MTU * 1000000 / rtt_us;
+  if (rtt_us == 0) {
+    pr_info("Nimbus: unexpected rtt==0 in single_seg_bps!\n");
+    return MTU * S_TO_US / 20000; /* assume default rtt of 20ms */
+  }
+  return MTU * S_TO_US / rtt_us;
 }
 
 /* Sets rin(t+1) given rin(t) and several other network observations. Closely
