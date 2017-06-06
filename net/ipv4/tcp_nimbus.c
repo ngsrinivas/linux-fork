@@ -9,12 +9,12 @@
 /* TODO: Hard-coding the number of bytes in the MTU is really hacky. Will fix
    this once I figure out the right way. */
 
-#define MYRATE 12000000
+#define MYRATE 60000000
 /* Rate above is in bytes per second. 1 MSS/millisecond is 12 Mbit/s or
    1.5 MBytes/second. */
 
 /* Link capacity in bytes per second. */
-#define LINK_CAP 134217728
+#define LINK_CAP 96200000
 /* Nimbus parameters. */
 #define NIMBUS_THRESH_DEL 15
 #define NIMBUS_ALPHA 8
@@ -122,7 +122,7 @@ static u32 estimate_cross_traffic(u32 est_bandwidth,
     zt = 0;
   else if (zt > LINK_CAP)
     zt = LINK_CAP;
-  pr_info("Nimbus: Corrected estimated cross traffic: %lld Mbit/s\n", zt >> 17);
+  pr_info("Nimbus: Corrected estimated cross traffic: %lld Mbit/s\n", zt / 125000);
   return (u32)zt;
 }
 
@@ -192,17 +192,17 @@ static u32 nimbus_rate_control(const struct sock *sk,
           "spare_cap %d Mbit/s rate_term %d Mbit/s "
           "delay_diff %d us delay_term %lld "
           "new_rate %d Mbit/s\n", 
-          rint >> 17,
-          spare_cap >> 17,
-          rate_term >> 17,
+          rint / 125000,
+          spare_cap / 125000,
+          rate_term / 125000,
           delay_diff,
           delay_term,
-          new_rate >> 17);
+          new_rate / 125000);
   /* Clamp the rate between two reasonable limits. */
   min_seg_rate = NIMBUS_MIN_SEGS_IN_FLIGHT * single_seg_bps(rtt);
   if (new_rate < (s32)min_seg_rate) new_rate = min_seg_rate;
   if (new_rate > (s32)NIMBUS_MAX_RATE) new_rate = NIMBUS_MAX_RATE;
-  pr_info("Nimbus: clamped rate %d Mbit/s\n", new_rate >> 17);
+  pr_info("Nimbus: clamped rate %d Mbit/s\n", new_rate / 125000);
   pr_info("Nimbus: total rtt samples %d errors %d\n",
           ca->total_samples,
           ca->ewma_rtt_error);
@@ -236,12 +236,12 @@ void tcp_nimbus_check_rate_mismatch(u64 achieved_snd_rate,
     diff_rate = achieved_snd_rate - set_rate;
   if (diff_rate > (perc_thresh * (set_rate / 100))) {
     pr_info("Nimbus: tcp_nimbus found a rate mismatch %d Mbit/s over %ld us\n",
-            diff_rate >> 17, rs->interval_us);
+            diff_rate / 125000, rs->interval_us);
     pr_info("Nimbus: (delivered %d segments) expected: %d Mbit/s achieved: snd %lld rcv %lld\n",
             rs->delivered,
-            set_rate >> 17,
-            achieved_snd_rate >> 17,
-            achieved_rcv_rate >> 17);
+            set_rate / 125000,
+            achieved_snd_rate / 125000,
+            achieved_rcv_rate / 125000);
   }
 }
 
@@ -289,7 +289,7 @@ void tcp_nimbus_cong_control(struct sock *sk, const struct rate_sample *rs)
     new_rate = nimbus_rate_control(sk, snd_bw_bps, rcv_bw_bps, LINK_CAP, zt);
     /* Set the socket rate to nimbus proposed rate */
     ca->rate = new_rate;
-    pr_info("Nimbus: Setting new rate %d Mbit/s\n", ca->rate >> 17);
+    pr_info("Nimbus: Setting new rate %d Mbit/s\n", ca->rate / 125000);
     tcp_nimbus_set_pacing_rate(sk);
   } else if (rate_not_changed_awhile(ca)) {
     pr_info("Nimbus: Rate hasn't changed in a while! Valid rate: %d %d\n",
