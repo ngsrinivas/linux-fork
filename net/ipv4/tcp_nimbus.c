@@ -51,10 +51,17 @@ bool min_rtt_time_to_update(struct nimbus *ca)
 void tcp_nimbus_pkts_acked(struct sock *sk, const struct ack_sample *sample)
 {
   struct nimbus *ca = inet_csk_ca(sk);
-  u32 sampleRTT = sample->rtt_us;
+  s32 sampleRTT = sample->rtt_us;
+
+  /* Check the validity of the RTT samples */
+  if (sampleRTT <= 0) {
+    pr_info("Nimbus: unexpected sample rtt %d in pkts_acked\n", sampleRTT);
+    return;
+  }
+
   /* Always update latest estimate of min RTT. This estimate only holds the
    * minimum over a short period of time, namely 10 RTTs. */
-  ca->new_min_rtt = min(ca->new_min_rtt, sampleRTT);
+  ca->new_min_rtt = min(ca->new_min_rtt, (u32)sampleRTT);
   /* If a sufficient period of time has elapsed since the last update to
    * min_rtt_us, update it. */
   if (min_rtt_time_to_update(ca)) {
@@ -62,6 +69,10 @@ void tcp_nimbus_pkts_acked(struct sock *sk, const struct ack_sample *sample)
     ca->min_rtt_stamp = tcp_time_stamp;
     ca->new_min_rtt = 0x7fffffff;
   }
+  if (sampleRTT > 2 * ca->last_rtt_us)
+    pr_info("Nimbus: unexpected spike in sample RTT! old: %d curr: %d\n",
+            ca->last_rtt_us,
+            sampleRTT);
   ca->last_rtt_us = sampleRTT;
   ca->ewma_rtt_us = ((sampleRTT * NIMBUS_EWMA_RECENCY) +
                      (ca->ewma_rtt_us *
