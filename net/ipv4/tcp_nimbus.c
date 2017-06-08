@@ -82,6 +82,7 @@ void tcp_nimbus_pkts_acked(struct sock *sk, const struct ack_sample *sample)
 static void tcp_nimbus_init(struct sock *sk)
 {
   struct nimbus *ca = inet_csk_ca(sk);
+  pr_info("Nimbus: initializing connection\n");
   ca->rate = MYRATE;
   ca->min_rtt_us = 0x7fffffff;
   ca->min_rtt_stamp = 0;
@@ -267,10 +268,15 @@ bool epoch_elapsed(struct nimbus *ca)
                  ca->rate_stamp + msecs_to_jiffies(NIMBUS_EPOCH_MS))));
 }
 
-bool rate_not_changed_awhile(struct nimbus *ca)
+void rate_not_changed_awhile(struct nimbus *ca,
+                             int measured_valid_rate,
+                             struct tcp_sock *tp)
 {
-  return after(tcp_time_stamp, ca->rate_stamp +
-               msecs_to_jiffies(NIMBUS_RATE_STALE_TIMEOUT_MS));
+  if(after(tcp_time_stamp, ca->rate_stamp +
+           msecs_to_jiffies(NIMBUS_RATE_STALE_TIMEOUT_MS))) {
+    pr_info("Nimbus: Rate hasn't changed in a while! Valid rate: %d %d\n",
+            measured_valid_rate, tp->snd_cwnd);
+  }
 }
 
 void tcp_nimbus_cong_control(struct sock *sk, const struct rate_sample *rs)
@@ -291,6 +297,15 @@ void tcp_nimbus_cong_control(struct sock *sk, const struct rate_sample *rs)
     rcv_bw_bps = snd_bw_bps = (u64)rs->delivered * MTU * S_TO_US;
     do_div(snd_bw_bps, rs->snd_int_us);
     do_div(rcv_bw_bps, rs->rcv_int_us);
+    /* Check if the send or recv rates are noisily enormous. This tends to
+       happen if very few segments were delivered. Typically the tx rate seems
+       to get bumped up significantly. */
+    if ((snd_bw_bps > NIMBUS_MAX_RATE) || (rcv_bw_bps > NIMBUS_MAX_RATE)) {
+      pr_info("Nimbus: invalid snd or rcv rates %lld %lld (delivered %d) \n",
+              snd_bw_bps, rcv_bw_bps, rs->delivered);
+      rate_not_changed_awhile(ca, measured_valid_rate, tp);
+      return;
+    }
     /* Check rate mismatch through a threshold difference between the set and
        achieved send rates. */
     tcp_nimbus_check_rate_mismatch(snd_bw_bps,
@@ -304,12 +319,10 @@ void tcp_nimbus_cong_control(struct sock *sk, const struct rate_sample *rs)
     new_rate = nimbus_rate_control(sk, snd_bw_bps, rcv_bw_bps, LINK_CAP, zt);
     /* Set the socket rate to nimbus proposed rate */
     ca->rate = new_rate;
-    pr_info("Nimbus: Setting new rate %d Mbit/s\n", ca->rate / 125000);
+    pr_info("Nimbus: Setting new rate %d Mbit/s (%d bps)\n", ca->rate / 125000, ca->rate);
     tcp_nimbus_set_pacing_rate(sk);
-  } else if (rate_not_changed_awhile(ca)) {
-    pr_info("Nimbus: Rate hasn't changed in a while! Valid rate: %d %d\n",
-            measured_valid_rate, tp->snd_cwnd);
-  }
+  } else
+    rate_not_changed_awhile(ca, measured_valid_rate, tp);
 }
 
 static struct tcp_congestion_ops tcp_nimbus = {
