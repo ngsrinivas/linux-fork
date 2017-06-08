@@ -37,7 +37,8 @@ struct nimbus {
   u32 last_rtt_us;    /* maintain the last rtt sample */
   u32 ewma_rtt_us;    /* maintain an ewma of instantaneous rtt samples */
   u32 rate_stamp;     /* last time when rate was updated */
-  u32 ewma_rtt_error; /* account samples with total_rtt error */
+  u32 ewma_rtt_ovr_error; /* account rtt samples that overshoot target rtt */
+  u32 ewma_rtt_unr_error; /* account rtt samples that undershoot target rtt */
   u32 total_samples;  /* total number of rtt samples */
 };
 
@@ -80,7 +81,8 @@ static void tcp_nimbus_init(struct sock *sk)
   sk->sk_max_pacing_rate = LINK_CAP;
   sk->sk_pacing_rate = 0;
   sk->sk_pacing_rate = ca->rate;
-  ca->ewma_rtt_error = 0;
+  ca->ewma_rtt_ovr_error = 0;
+  ca->ewma_rtt_unr_error = 0;
   ca->total_samples = 0;
 }
 
@@ -180,9 +182,10 @@ static u32 nimbus_rate_control(const struct sock *sk,
 
   /* Error accounting */
   ca->total_samples++;
-  if (((sign == 0) && (delay_diff > (s32)DELAY_ERROR_THRESH_US)) ||
-      ((sign == 1) && (delay_diff < -(s32)DELAY_ERROR_THRESH_US)))
-    ca->ewma_rtt_error++;
+  if ((sign == 0) && (delay_diff > (s32)DELAY_ERROR_THRESH_US))
+    ca->ewma_rtt_ovr_error++;
+  else if ((sign == 1) && (delay_diff < -(s32)DELAY_ERROR_THRESH_US))
+    ca->ewma_rtt_unr_error++;
 
   /* Compute new rate as a combination of delay mismatch and rate mismatch. */
   new_rate = rint + rate_term - delay_term;
@@ -202,10 +205,11 @@ static u32 nimbus_rate_control(const struct sock *sk,
   min_seg_rate = NIMBUS_MIN_SEGS_IN_FLIGHT * single_seg_bps(rtt);
   if (new_rate < (s32)min_seg_rate) new_rate = min_seg_rate;
   if (new_rate > (s32)NIMBUS_MAX_RATE) new_rate = NIMBUS_MAX_RATE;
-  pr_info("Nimbus: clamped rate %d Mbit/s\n", new_rate / 125000);
-  pr_info("Nimbus: total rtt samples %d errors %d\n",
+  pr_info("Nimbus: clamped rate %d Mbit/s (%d bps)\n", new_rate / 125000, new_rate);
+  pr_info("Nimbus: total rtt samples %d overshoots %d undershoots %d\n",
           ca->total_samples,
-          ca->ewma_rtt_error);
+          ca->ewma_rtt_ovr_error,
+          ca->ewma_rtt_unr_error);
   return (u32)new_rate;
 }
 
