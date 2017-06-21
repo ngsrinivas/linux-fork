@@ -44,8 +44,9 @@ struct nimbus {
 
 bool min_rtt_time_to_update(struct nimbus *ca)
 {
+  // ca->new_min_rtt has units of us
   return after(tcp_time_stamp, ca->min_rtt_stamp +
-               msecs_to_jiffies(ca->new_min_rtt));
+               msecs_to_jiffies(ca->new_min_rtt / 1000));
 }
 
 void tcp_nimbus_pkts_acked(struct sock *sk, const struct ack_sample *sample)
@@ -59,16 +60,6 @@ void tcp_nimbus_pkts_acked(struct sock *sk, const struct ack_sample *sample)
     return;
   }
 
-  /* Always update latest estimate of min RTT. This estimate only holds the
-   * minimum over a short period of time, namely 1000 RTTs. */
-  ca->new_min_rtt = min(ca->new_min_rtt, (u32)sampleRTT);
-  /* If a sufficient period of time has elapsed since the last update to
-   * min_rtt_us, update it. */
-  if (min_rtt_time_to_update(ca)) {
-    ca->min_rtt_us = ca->new_min_rtt;
-    ca->min_rtt_stamp = tcp_time_stamp;
-    ca->new_min_rtt = 0x7fffffff;
-  }
   if (sampleRTT > 2 * ca->last_rtt_us)
     pr_info("Nimbus: unexpected spike in sample RTT! old: %d curr: %d\n",
             ca->last_rtt_us,
@@ -77,6 +68,11 @@ void tcp_nimbus_pkts_acked(struct sock *sk, const struct ack_sample *sample)
   ca->ewma_rtt_us = ((sampleRTT * NIMBUS_EWMA_RECENCY) +
                      (ca->ewma_rtt_us *
                       (NIMBUS_FRAC_DR-NIMBUS_EWMA_RECENCY))) / NIMBUS_FRAC_DR;
+
+  // Allow about 2 RTTs for the ewma to settle before setting the min rtt 
+  if (after(tcp_time_stamp, ca->min_rtt_stamp + msecs_to_jiffies(ca->ewma_rtt_us / 500))) {
+    ca->min_rtt_us = min(ca->min_rtt_us, ca->ewma_rtt_us);
+  }
 }
 
 static void tcp_nimbus_init(struct sock *sk)
@@ -85,7 +81,7 @@ static void tcp_nimbus_init(struct sock *sk)
   pr_info("Nimbus: initializing connection\n");
   ca->rate = MYRATE;
   ca->min_rtt_us = 0x7fffffff;
-  ca->min_rtt_stamp = 0;
+  ca->min_rtt_stamp = tcp_time_stamp;
   ca->new_min_rtt = 0x7fffffff;
   ca->last_rtt_us = 0x7fffffff;
   ca->ewma_rtt_us = 0x7fffffff;
