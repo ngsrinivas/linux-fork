@@ -9,17 +9,17 @@
 /* TODO: Hard-coding the number of bytes in the MTU is really hacky. Will fix
    this once I figure out the right way. */
 
-#define MYRATE 60000000
+#define MYRATE 600000000
 /* Rate above is in bytes per second. 1 MSS/millisecond is 12 Mbit/s or
    1.5 MBytes/second. */
 
 /* Link capacity in bytes per second. */
-#define LINK_CAP 96200000
+#define LINK_CAP 1000000000
 /* Nimbus parameters. */
 #define NIMBUS_THRESH_DEL 15
 #define NIMBUS_ALPHA 8
 #define NIMBUS_BETA 5
-#define NIMBUS_MAX_RATE (12 * LINK_CAP / 10)
+#define NIMBUS_MAX_RATE (12 * (LINK_CAP / 10))
 #define NIMBUS_FRAC_DR 10
 #define NIMBUS_CROSS_TRAFFIC_EST_VALID_THRESH 13
 #define NIMBUS_EPOCH_MS 20
@@ -55,12 +55,12 @@ void tcp_nimbus_pkts_acked(struct sock *sk, const struct ack_sample *sample)
 
   /* Check the validity of the RTT samples */
   if (sampleRTT <= 0) {
-    pr_info("Nimbus: unexpected sample rtt %d in pkts_acked\n", sampleRTT);
+    //pr_info("Nimbus: unexpected sample rtt %d in pkts_acked\n", sampleRTT);
     return;
   }
 
   /* Always update latest estimate of min RTT. This estimate only holds the
-   * minimum over a short period of time, namely 10 RTTs. */
+   * minimum over a short period of time, namely 1000 RTTs. */
   ca->new_min_rtt = min(ca->new_min_rtt, (u32)sampleRTT);
   /* If a sufficient period of time has elapsed since the last update to
    * min_rtt_us, update it. */
@@ -173,7 +173,7 @@ static u32 nimbus_rate_control(const struct sock *sk,
   min_rtt  = ca->min_rtt_us;
   last_rtt = ca->last_rtt_us;
   spare_cap = (s32)est_bandwidth - zt - rint;
-  rate_term = NIMBUS_ALPHA * spare_cap / NIMBUS_FRAC_DR;
+  rate_term = NIMBUS_ALPHA * (spare_cap / NIMBUS_FRAC_DR);
   expected_rtt = (NIMBUS_THRESH_DEL * min_rtt)/NIMBUS_FRAC_DR;
   delay_diff = (s32)rtt - (s32)expected_rtt;
   delay_term = (s64)est_bandwidth * delay_diff;
@@ -253,7 +253,7 @@ void tcp_nimbus_check_rate_mismatch(u64 achieved_snd_rate,
   if (diff_rate > (perc_thresh * (set_rate / 100))) {
     pr_info("Nimbus: tcp_nimbus found a rate mismatch %d Mbit/s over %ld us\n",
             diff_rate / 125000, rs->interval_us);
-    pr_info("Nimbus: (delivered %d segments) expected: %d Mbit/s achieved: snd %lld rcv %lld\n",
+    pr_info("Nimbus: (delivered %d segments) expected: %d Mbit/s achieved: snd %lld Mbit/s rcv %lld Mbit/s\n",
             rs->delivered,
             set_rate / 125000,
             achieved_snd_rate / 125000,
@@ -338,7 +338,7 @@ static struct tcp_congestion_ops tcp_nimbus = {
 
 static int __init tcp_nimbus_register(void)
 {
-  printk(KERN_INFO "Initializing nimbus\n");
+  printk(KERN_INFO "Initializing nimbus. Link cap: %d\n", LINK_CAP);
   BUILD_BUG_ON(sizeof(struct nimbus) > ICSK_CA_PRIV_SIZE);
   tcp_register_congestion_control(&tcp_nimbus);
   return 0;
