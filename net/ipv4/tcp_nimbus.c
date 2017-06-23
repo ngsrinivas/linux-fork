@@ -94,6 +94,31 @@ static void tcp_nimbus_init(struct sock *sk)
   ca->total_samples = 0;
 }
 
+/*
+* Detect drops.
+*
+* TCP_CA_Loss -> a timeout happened
+* TCP_CA_Recovery -> an isolated loss (3x dupack) happened.
+* TCP_CA_CWR -> got an ECN
+*/
+void tcp_nimbus_set_state(struct sock *sk, u8 new_state) {
+    switch (new_state) {
+        case TCP_CA_Recovery:
+            printk(KERN_INFO "entered TCP_CA_Recovery (dupack drop)\n");
+            break;
+        case TCP_CA_Loss:
+            printk(KERN_INFO "entered TCP_CA_Loss (timeout drop)\n");
+            break;
+        case TCP_CA_CWR:
+            printk(KERN_INFO "entered TCP_CA_CWR (ecn drop)\n");
+            break;
+        default:
+            printk(KERN_INFO "TCP normal state\n");
+            return;
+    }
+}
+EXPORT_SYMBOL_GPL(tcp_nimbus_set_state);
+
 static void tcp_nimbus_set_pacing_rate(struct sock *sk)
 {
   struct tcp_sock *tp = tcp_sk(sk);
@@ -104,6 +129,7 @@ static void tcp_nimbus_set_pacing_rate(struct sock *sk)
     segs_in_flight = (u64)ca->rate * ca->ewma_rtt_us;
     do_div(segs_in_flight, MTU);
     do_div(segs_in_flight, S_TO_US);
+    pr_info("Nimbus: Setting new rate %d Mbit/s (%d bps) (cwnd %llu)\n", ca->rate / 125000, ca->rate, segs_in_flight + 3);
     /* Add few more segments to segs_to_flight to prevent rate underflow due to
        temporary RTT fluctuations. */
     tp->snd_cwnd = segs_in_flight + 3;
@@ -125,7 +151,7 @@ static u32 estimate_cross_traffic(u32 est_bandwidth,
   }
   do_div(zt, routt);
   zt -= rint;
-  pr_info("Nimbus: Estimated cross traffic: %lld bps\n", zt);
+  pr_info("Nimbus: Estimated cross traffic: %lld Bps\n", zt);
   if (rtt < (NIMBUS_CROSS_TRAFFIC_EST_VALID_THRESH * min_rtt / NIMBUS_FRAC_DR))
     zt = 0;
   else if (zt < 0)
@@ -164,6 +190,7 @@ static u32 nimbus_rate_control(const struct sock *sk,
   s32 rate_term;
   u32 min_seg_rate;
 
+  struct tcp_sock *tp = tcp_sk(sk);
   struct nimbus *ca = inet_csk_ca(sk);
   rtt = ca->ewma_rtt_us;
   min_rtt  = ca->min_rtt_us;
@@ -202,13 +229,15 @@ static u32 nimbus_rate_control(const struct sock *sk,
   pr_info("Nimbus: rint %d Mbit/s "
           "spare_cap %d Mbit/s rate_term %d Mbit/s "
           "delay_diff %d us delay_term %lld "
-          "new_rate %d Mbit/s\n", 
+          "new_rate %d Mbit/s snd_cwnd %d in_slow_start %d\n", 
           rint / 125000,
           spare_cap / 125000,
           rate_term / 125000,
           delay_diff,
           delay_term,
-          new_rate / 125000);
+          new_rate / 125000, 
+	  tp->snd_cwnd,
+	  tcp_in_slow_start(tp));
   /* Clamp the rate between two reasonable limits. */
   min_seg_rate = NIMBUS_MIN_SEGS_IN_FLIGHT * single_seg_bps(rtt);
   if (new_rate < (s32)min_seg_rate) new_rate = min_seg_rate;
@@ -315,7 +344,6 @@ void tcp_nimbus_cong_control(struct sock *sk, const struct rate_sample *rs)
     new_rate = nimbus_rate_control(sk, snd_bw_bps, rcv_bw_bps, LINK_CAP, zt);
     /* Set the socket rate to nimbus proposed rate */
     ca->rate = new_rate;
-    pr_info("Nimbus: Setting new rate %d Mbit/s (%d bps)\n", ca->rate / 125000, ca->rate);
     tcp_nimbus_set_pacing_rate(sk);
   } else
     rate_not_changed_awhile(ca, measured_valid_rate, tp);
@@ -327,6 +355,7 @@ static struct tcp_congestion_ops tcp_nimbus = {
   .pkts_acked = tcp_nimbus_pkts_acked,
   .cong_control = tcp_nimbus_cong_control,
   .undo_cwnd = tcp_reno_undo_cwnd,
+  .set_state = tcp_nimbus_set_state, 
 
   .owner = THIS_MODULE,
   .name  = "nimbus",
