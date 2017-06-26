@@ -52,11 +52,12 @@ bool min_rtt_time_to_update(struct nimbus *ca)
 void tcp_nimbus_pkts_acked(struct sock *sk, const struct ack_sample *sample)
 {
   struct nimbus *ca = inet_csk_ca(sk);
+  struct tcp_sock *tp = tcp_sk(sk);
   s32 sampleRTT = sample->rtt_us;
 
   /* Check the validity of the RTT samples */
   if (sampleRTT <= 0) {
-    //pr_info("Nimbus: unexpected sample rtt %d in pkts_acked\n", sampleRTT);
+    //pr_info("Nimbus: invalid sample rtt %d in pkts_acked\n", sampleRTT);
     return;
   }
 
@@ -69,10 +70,8 @@ void tcp_nimbus_pkts_acked(struct sock *sk, const struct ack_sample *sample)
                      (ca->ewma_rtt_us *
                       (NIMBUS_FRAC_DR-NIMBUS_EWMA_RECENCY))) / NIMBUS_FRAC_DR;
 
-  // Allow about 2 RTTs for the ewma to settle before setting the min rtt 
-  if (after(tcp_time_stamp, ca->min_rtt_stamp + msecs_to_jiffies(ca->ewma_rtt_us / 500))) {
-    ca->min_rtt_us = min(ca->min_rtt_us, ca->ewma_rtt_us);
-  }
+  // get min rtt from TCP
+  ca->min_rtt_us = minmax_get(&(tp->rtt_min));
 }
 
 static void tcp_nimbus_init(struct sock *sk)
@@ -224,8 +223,8 @@ static u32 nimbus_rate_control(const struct sock *sk,
 
   /* Compute new rate as a combination of delay mismatch and rate mismatch. */
   new_rate = rint + rate_term - delay_term;
-  pr_info("Nimbus: min_rtt %d ewma_rtt %d last_rtt %d expected_rtt %d\n",
-          min_rtt, rtt, last_rtt, expected_rtt);
+  pr_info("Nimbus: min_rtt %d ewma_rtt %d last_rtt %d expected_rtt %d tcp_min_rtt %d\n",
+          min_rtt, rtt, last_rtt, expected_rtt, minmax_get(&(tp->rtt_min)));
   pr_info("Nimbus: rint %d Mbit/s "
           "spare_cap %d Mbit/s rate_term %d Mbit/s "
           "delay_diff %d us delay_term %lld "
@@ -253,7 +252,7 @@ static u32 nimbus_rate_control(const struct sock *sk,
 static int rate_sample_valid(const struct rate_sample *rs)
 {
   int ret = 0;
-  if ((rs->delivered > 0) && (rs->snd_int_us > 0) && (rs->rcv_int_us > 0))
+  if ((rs->delivered > 0) && (rs->snd_int_us > 0) && (rs->rcv_int_us > 0) && (rs->interval_us > 0))
     return 0;
   if (rs->delivered <= 0)
     ret |= 1;
@@ -261,6 +260,8 @@ static int rate_sample_valid(const struct rate_sample *rs)
     ret |= 2;
   if (rs->rcv_int_us <= 0)
     ret |= 4;
+  if (rs->interval_us <= 0)
+    ret |= 8;
   return ret;
 }
 
@@ -322,6 +323,8 @@ void tcp_nimbus_cong_control(struct sock *sk, const struct rate_sample *rs)
     rcv_bw_bps = snd_bw_bps = (u64)rs->delivered * MTU * S_TO_US;
     do_div(snd_bw_bps, rs->snd_int_us);
     do_div(rcv_bw_bps, rs->rcv_int_us);
+    pr_info("Nimbus: rate_calculation: delivered %llu, MTU %d, S_TO_US %d, rcv_bw_bps %llu, rcv_int_us %lu, snd_bw_bps %llu, snd_int_us %lu\n",
+		    (u64) rs->delivered, MTU, S_TO_US, rcv_bw_bps, rs->rcv_int_us, snd_bw_bps, rs->snd_int_us);
     /* Check if the send or recv rates are noisily enormous. This tends to
        happen if very few segments were delivered. Typically the tx rate seems
        to get bumped up significantly. */
