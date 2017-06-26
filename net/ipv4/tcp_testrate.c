@@ -8,12 +8,18 @@
 /* TODO: Hard-coding the number of bytes in the MTU is really hacky. Will fix
    this once I figure out the right way. */
 
-#define MYRATE 128000000
+#define MYRATE 875000000
 /* Rate above is in bytes per second. 1 MSS/millisecond is 12 Mbit/s or
    1.5 MBytes/second. */
 
 struct testrate {
   u32 rate;           /* rate to pace packets, in bytes per second */
+
+  u32 min_rtt_us;
+
+  u32 rtt_epoch;
+  u32 recent_rtt;
+  u32 rtt_count;
 };
 
 static void tcp_testrate_init(struct sock *sk)
@@ -23,6 +29,49 @@ static void tcp_testrate_init(struct sock *sk)
   sk->sk_max_pacing_rate = ca->rate;
   sk->sk_pacing_rate = 0;
   sk->sk_pacing_rate = ca->rate;
+
+  // RTT estimator
+  ca->rtt_epoch = tcp_time_stamp;
+  ca->recent_rtt = 0x7fffffff;
+  ca->min_rtt_us = 0x7fffffff;
+  ca->rtt_count = 0;
+
+  pr_info("intialized testrate\n");
+}
+
+/* Use a vegas-like formula for computing the RTT:
+ * Maintain two values, global and recent min RTTs
+ * 
+ * o Global min RTT: get from TCP with tp->rtt_min
+ * o Recent min RTT: use as the current RTT to avoid weird TCP RTT reports.
+ *   Value reset on nimbus rate update epoch.
+ */
+void tcp_testrate_pkts_acked(struct sock *sk, const struct ack_sample *sample)
+{
+  struct testrate *ca = inet_csk_ca(sk);
+  struct tcp_sock *tp = tcp_sk(sk);
+  s32 sampleRTT = sample->rtt_us;
+
+  /* Check the validity of the RTT samples */
+  if (sampleRTT <= 0) {
+    //pr_info("Nimbus: invalid sample rtt %d in pkts_acked\n", sampleRTT);
+    return;
+  }
+
+  /* Always update latest estimate of min RTT. This estimate only holds the
+   * minimum over a short period of time. A rate update will reset this value. */
+  if (after(tcp_time_stamp, ca->rtt_epoch + msecs_to_jiffies(100))) {
+    pr_info("testrate: min_rtt: %d recent_rtt: %d count: %d\n", ca->min_rtt_us, ca->recent_rtt, ca->rtt_count);
+    ca->rtt_count = 0;
+    ca->recent_rtt = 0x7fffffff;
+    ca->rtt_epoch = tcp_time_stamp;
+
+    // get min rtt from TCP
+    ca->min_rtt_us = minmax_get(&(tp->rtt_min));
+  } else {
+    ca->recent_rtt = min(ca->recent_rtt, (u32)sampleRTT);
+    ca->rtt_count++;
+  }
 }
 
 static int rate_sample_valid(const struct rate_sample *rs)
@@ -87,6 +136,7 @@ static struct tcp_congestion_ops tcp_testrate = {
   .ssthresh = tcp_reno_ssthresh,
   .cong_control = tcp_testrate_cong_control,
   .undo_cwnd = tcp_reno_undo_cwnd,
+  .pkts_acked = tcp_testrate_pkts_acked,
 
   .owner = THIS_MODULE,
   .name  = "testrate",
