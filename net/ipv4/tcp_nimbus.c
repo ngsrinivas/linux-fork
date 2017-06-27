@@ -34,6 +34,7 @@ struct nimbus {
   u32 min_rtt_us;     /* maintain min rtt samples */
   u32 min_rtt_stamp;  /* time when min rtt was recorded */
   u32 new_min_rtt;    /* new estimate of min rtt */
+  u32 rtt_count;
   u32 last_rtt_us;    /* maintain the last rtt sample */
   u32 ewma_rtt_us;    /* maintain an ewma of instantaneous rtt samples */
   u32 rate_stamp;     /* last time when rate was updated */
@@ -46,9 +47,16 @@ bool min_rtt_time_to_update(struct nimbus *ca)
 {
   // ca->new_min_rtt has units of us
   return after(tcp_time_stamp, ca->min_rtt_stamp +
-               msecs_to_jiffies(ca->new_min_rtt / 1000));
+               msecs_to_jiffies(ca->new_min_rtt));
 }
 
+/* Use a vegas-like formula for computing the RTT:
+ * Maintain two values, global and recent min RTTs
+ * 
+ * o Global min RTT: get from TCP with tp->rtt_min
+ * o Recent min RTT: use as the current RTT to avoid weird TCP RTT reports.
+ *   Value reset on nimbus rate update epoch.
+ */
 void tcp_nimbus_pkts_acked(struct sock *sk, const struct ack_sample *sample)
 {
   struct nimbus *ca = inet_csk_ca(sk);
@@ -61,14 +69,19 @@ void tcp_nimbus_pkts_acked(struct sock *sk, const struct ack_sample *sample)
     return;
   }
 
-  if (sampleRTT > 2 * ca->last_rtt_us)
-    pr_info("Nimbus: unexpected spike in sample RTT! old: %d curr: %d\n",
-            ca->last_rtt_us,
-            sampleRTT);
-  ca->last_rtt_us = sampleRTT;
-  ca->ewma_rtt_us = ((sampleRTT * NIMBUS_EWMA_RECENCY) +
-                     (ca->ewma_rtt_us *
-                      (NIMBUS_FRAC_DR-NIMBUS_EWMA_RECENCY))) / NIMBUS_FRAC_DR;
+  /* Always update latest estimate of min RTT. This estimate only holds the
+   * minimum over a short period of time. A rate update will reset this value. */
+  ca->new_min_rtt = min(ca->new_min_rtt, (u32)sampleRTT);
+
+  //if (sampleRTT > 2 * ca->last_rtt_us)
+  //  pr_info("Nimbus: unexpected spike in sample RTT! old: %d curr: %d\n",
+  //          ca->last_rtt_us,
+  //          sampleRTT);
+  //ca->last_rtt_us = sampleRTT;
+  //ca->ewma_rtt_us = ((sampleRTT * NIMBUS_EWMA_RECENCY) +
+  //                   (ca->ewma_rtt_us *
+  //                    (NIMBUS_FRAC_DR-NIMBUS_EWMA_RECENCY))) / NIMBUS_FRAC_DR;
+  ca->rtt_count++;
 
   // get min rtt from TCP
   ca->min_rtt_us = minmax_get(&(tp->rtt_min));
@@ -80,7 +93,7 @@ static void tcp_nimbus_init(struct sock *sk)
   pr_info("Nimbus: initializing connection\n");
   ca->rate = MYRATE;
   ca->min_rtt_us = 0x7fffffff;
-  ca->min_rtt_stamp = tcp_time_stamp;
+  ca->min_rtt_stamp = 0;
   ca->new_min_rtt = 0x7fffffff;
   ca->last_rtt_us = 0x7fffffff;
   ca->ewma_rtt_us = 0x7fffffff;
@@ -191,12 +204,22 @@ static u32 nimbus_rate_control(const struct sock *sk,
 
   struct tcp_sock *tp = tcp_sk(sk);
   struct nimbus *ca = inet_csk_ca(sk);
+
+  // RTT accounting.
+  last_rtt = ca->ewma_rtt_us;
+  ca->ewma_rtt_us = ((ca->new_min_rtt * NIMBUS_EWMA_RECENCY) +
+                     (last_rtt *
+                     (NIMBUS_FRAC_DR-NIMBUS_EWMA_RECENCY))) / NIMBUS_FRAC_DR;
   rtt = ca->ewma_rtt_us;
   min_rtt  = ca->min_rtt_us;
-  last_rtt = ca->last_rtt_us;
+  expected_rtt = (NIMBUS_THRESH_DEL * min_rtt)/NIMBUS_FRAC_DR;
+  pr_info("Nimbus: min_rtt %d ewma_rtt %d last_rtt %d expected_rtt %d recent_rtt %d rtt_count %d srtt %d\n",
+          min_rtt, rtt, last_rtt, expected_rtt, ca->new_min_rtt, ca->rtt_count, tp->srtt_us / 8);
+  ca->new_min_rtt = 0x7fffffff;
+  ca->rtt_count = 0;
+
   spare_cap = (s32)est_bandwidth - zt - rint;
   rate_term = NIMBUS_ALPHA * (spare_cap / NIMBUS_FRAC_DR);
-  expected_rtt = (NIMBUS_THRESH_DEL * min_rtt)/NIMBUS_FRAC_DR;
   delay_diff = (s32)rtt - (s32)expected_rtt;
   delay_term = (s64)est_bandwidth * delay_diff;
   sign = 0;
@@ -223,25 +246,22 @@ static u32 nimbus_rate_control(const struct sock *sk,
 
   /* Compute new rate as a combination of delay mismatch and rate mismatch. */
   new_rate = rint + rate_term - delay_term;
-  pr_info("Nimbus: min_rtt %d ewma_rtt %d last_rtt %d expected_rtt %d tcp_min_rtt %d\n",
-          min_rtt, rtt, last_rtt, expected_rtt, minmax_get(&(tp->rtt_min)));
   pr_info("Nimbus: rint %d Mbit/s "
           "spare_cap %d Mbit/s rate_term %d Mbit/s "
           "delay_diff %d us delay_term %lld "
-          "new_rate %d Mbit/s snd_cwnd %d in_slow_start %d\n", 
+          "new_rate %d Mbit/s snd_cwnd %d\n", 
           rint / 125000,
           spare_cap / 125000,
           rate_term / 125000,
           delay_diff,
           delay_term,
           new_rate / 125000, 
-	  tp->snd_cwnd,
-	  tcp_in_slow_start(tp));
+	      tp->snd_cwnd);
   /* Clamp the rate between two reasonable limits. */
   min_seg_rate = NIMBUS_MIN_SEGS_IN_FLIGHT * single_seg_bps(rtt);
   if (new_rate < (s32)min_seg_rate) new_rate = min_seg_rate;
   if (new_rate > (s32)NIMBUS_MAX_RATE) new_rate = NIMBUS_MAX_RATE;
-  pr_info("Nimbus: clamped rate %d Mbit/s (%d bps)\n", new_rate / 125000, new_rate);
+  pr_info("Nimbus: clamped rate %d Mbit/s (%d Bps)\n", new_rate / 125000, new_rate);
   pr_info("Nimbus: total rtt samples %d overshoots %d undershoots %d\n",
           ca->total_samples,
           ca->ewma_rtt_ovr_error,
