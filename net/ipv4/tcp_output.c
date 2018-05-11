@@ -369,7 +369,9 @@ static void tcp_ecn_send(struct sock *sk, struct sk_buff *skb,
 			 struct tcphdr *th, int tcp_header_len)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
-
+	th->cwr = 1;
+	skb_shinfo(skb)->gso_type |= SKB_GSO_TCP_ECN;
+	//printk(KERN_INFO "SKB Length %u\n", skb->len);
 	if (tp->ecn_flags & TCP_ECN_OK) {
 		/* Not-retransmitted data segment: set ECT and inject CWR. */
 		if (skb->len != tcp_header_len &&
